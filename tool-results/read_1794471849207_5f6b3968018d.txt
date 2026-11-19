@@ -1,0 +1,571 @@
+     1→'use client'
+     2→
+     3→import { useCallback, useEffect, useMemo, useState } from 'react'
+     4→import {
+     5→  Plus, Search, Package, Pencil, Copy, Trash2, ShoppingCart, Upload, Download,
+     6→  LayoutGrid, List, PackageX, RotateCcw, RefreshCw, ChevronRight, ChevronLeft, Wrench,
+     7→} from 'lucide-react'
+     8→import { Button } from '@/components/ui/button'
+     9→import { Input } from '@/components/ui/input'
+    10→import { Card, CardContent } from '@/components/ui/card'
+    11→import { Badge } from '@/components/ui/badge'
+    12→import { Checkbox } from '@/components/ui/checkbox'
+    13→import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+    14→import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+    15→import {
+    16→  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+    17→} from '@/components/ui/dropdown-menu'
+    18→import { useToast } from '@/hooks/use-toast'
+    19→import { usePanel, canDo } from '@/store/panel'
+    20→import { api, downloadFile } from '@/lib/api'
+    21→import type { Category, Product } from '@/lib/client-types'
+    22→import { faMoney, faNumber, STATUS_LABELS } from '@/lib/format'
+    23→import { ProductFormDialog } from './product-form-dialog'
+    24→import { SellDialog } from './sell-dialog'
+    25→import { StockAdjustDialog } from './stock-adjust-dialog'
+    26→
+    27→type ListResponse = { total: number; page: number; perPage: number; items: Product[] }
+    28→
+    29→const statusBadge = (p: Product) => {
+    30→  if (p.status === 'DRAFT') return { label: STATUS_LABELS.DRAFT, cls: 'bg-slate-100 text-slate-600 dark:bg-slate-900 dark:text-slate-300' }
+    31→  if (p.status === 'OUT' || p.stock === 0) return { label: STATUS_LABELS.OUT, cls: 'bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300' }
+    32→  if (p.status === 'ARCHIVED') return { label: STATUS_LABELS.ARCHIVED, cls: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300' }
+    33→  if (p.stock <= p.lowStockThreshold) return { label: 'کم‌موجودی', cls: 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300' }
+    34→  return { label: STATUS_LABELS.PUBLISHED, cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300' }
+    35→}
+    36→
+    37→export function ProductsView() {
+    38→  const { session, dataVersion, bumpData } = usePanel()
+    39→  const { toast } = useToast()
+    40→
+    41→  const [items, setItems] = useState<Product[]>([])
+    42→  const [total, setTotal] = useState(0)
+    43→  const [page, setPage] = useState(1)
+    44→  const [perPage] = useState(12)
+    45→  const [loading, setLoading] = useState(true)
+    46→
+    47→  const [search, setSearch] = useState('')
+    48→  const [category, setCategory] = useState('all')
+    49→  const [status, setStatus] = useState('all')
+    50→  const [stock, setStock] = useState('all')
+    51→  const [sort, setSort] = useState('newest')
+    52→  const [layout, setLayout] = useState<'grid' | 'table'>('grid')
+    53→  const [trashMode, setTrashMode] = useState(false)
+    54→  const [selected, setSelected] = useState<Set<string>>(new Set())
+    55→
+    56→  const [categories, setCategories] = useState<Category[]>([])
+    57→  const [editing, setEditing] = useState<Product | null>(null)
+    58→  const [formOpen, setFormOpen] = useState(false)
+    59→  const [selling, setSelling] = useState<Product | null>(null)
+    60→  const [adjusting, setAdjusting] = useState<Product | null>(null)
+    61→
+    62→  const canManage = canDo(session?.role, 'product.create')
+    63→  const canEdit = canDo(session?.role, 'product.update')
+    64→  const canDelete = canDo(session?.role, 'product.delete')
+    65→  const canSell = canDo(session?.role, 'sale.create')
+    66→
+    67→  const load = useCallback(async () => {
+    68→    setLoading(true)
+    69→    try {
+    70→      const params = new URLSearchParams({ page: String(page), perPage: String(perPage), sort })
+    71→      if (search) params.set('search', search)
+    72→      if (category !== 'all') params.set('category', category)
+    73→      if (status !== 'all') params.set('status', status)
+    74→      if (stock !== 'all') params.set('stock', stock)
+    75→      if (trashMode) params.set('trash', '1')
+    76→      const res = await api<ListResponse>(`/api/products?${params}`)
+    77→      setItems(res.items)
+    78→      setTotal(res.total)
+    79→    } catch (err) {
+    80→      toast({ title: 'خطا', description: err instanceof Error ? err.message : 'بارگذاری ناموفق', variant: 'destructive' })
+    81→    } finally {
+    82→      setLoading(false)
+    83→    }
+    84→  }, [page, perPage, search, category, status, stock, sort, trashMode, toast])
+    85→
+    86→  useEffect(() => {
+    87→    const t = setTimeout(load, search ? 350 : 0)
+    88→    return () => clearTimeout(t)
+    89→  }, [load, dataVersion])
+    90→
+    91→  useEffect(() => {
+    92→    api<{ categories: Category[] }>('/api/categories').then((r) => setCategories(r.categories)).catch(() => {})
+    93→  }, [dataVersion])
+    94→
+    95→  const totalPages = Math.max(1, Math.ceil(total / perPage))
+    96→
+    97→  async function quickUpdate(p: Product, patch: Record<string, unknown>) {
+    98→    try {
+    99→      await api(`/api/products/${p.id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+   100→      toast({ title: 'ذخیره شد', description: `${p.name} به‌روزرسانی شد` })
+   101→      bumpData()
+   102→    } catch (err) {
+   103→      toast({ title: 'خطا', description: err instanceof Error ? err.message : 'ذخیره ناموفق', variant: 'destructive' })
+   104→    }
+   105→  }
+   106→
+   107→  async function duplicate(p: Product) {
+   108→    try {
+   109→      await api(`/api/products/${p.id}/duplicate`, { method: 'POST' })
+   110→      toast({ title: 'کپی ساخته شد', description: `از «${p.name}» نسخه جدید ساخته شد` })
+   111→      bumpData()
+   112→    } catch (err) {
+   113→      toast({ title: 'خطا', description: err instanceof Error ? err.message : 'کپی ناموفق', variant: 'destructive' })
+   114→    }
+   115→  }
+   116→
+   117→  async function trash(p: Product) {
+   118→    try {
+   119→      await api(`/api/products/${p.id}`, { method: 'DELETE' })
+   120→      toast({ title: 'به سطل زباله منتقل شد', description: p.name })
+   121→      bumpData()
+   122→    } catch (err) {
+   123→      toast({ title: 'خطا', description: err instanceof Error ? err.message : 'حذف ناموفق', variant: 'destructive' })
+   124→    }
+   125→  }
+   126→
+   127→  async function restore(p: Product) {
+   128→    try {
+   129→      await api(`/api/products/${p.id}/restore`, { method: 'POST' })
+   130→      toast({ title: 'بازگردانی شد', description: p.name })
+   131→      bumpData()
+   132→    } catch (err) {
+   133→      toast({ title: 'خطا', description: err instanceof Error ? err.message : 'بازگردانی ناموفق', variant: 'destructive' })
+   134→    }
+   135→  }
+   136→
+   137→  async function bulk(action: string, extra: Record<string, unknown> = {}) {
+   138→    if (selected.size === 0) return
+   139→    try {
+   140→      await api('/api/products/bulk', { method: 'POST', body: JSON.stringify({ ids: Array.from(selected), action, ...extra }) })
+   141→      toast({ title: 'عملیات گروهی انجام شد', description: `${faNumber(selected.size)} محصول` })
+   142→      setSelected(new Set())
+   143→      bumpData()
+   144→    } catch (err) {
+   145→      toast({ title: 'خطا', description: err instanceof Error ? err.message : 'عملیات ناموفق', variant: 'destructive' })
+   146→    }
+   147→  }
+   148→
+   149→  async function bulkPricePercent() {
+   150→    const input = window.prompt('درصد تغییر قیمت (مثلاً ۳ برای افزایش و ۳- برای کاهش):')
+   151→    if (!input) return
+   152→    const pct = parseInt(input.replace(/[٪%]/g, ''), 10)
+   153→    if (!Number.isFinite(pct) || pct === 0) {
+   154→      toast({ title: 'درصد نامعتبر', variant: 'destructive' })
+   155→      return
+   156→    }
+   157→    await bulk('pricePercent', { percent: pct })
+   158→  }
+   159→
+   160→  async function importCsv(file: File) {
+   161→    try {
+   162→      const res = await api<{ created: number; errors: string[] }>('/api/import', { method: 'POST', body: file })
+   163→      toast({
+   164→        title: 'ورود گروهی انجام شد',
+   165→        description: `${faNumber(res.created)} محصول ساخته شد${res.errors.length ? ` — ${faNumber(res.errors.length)} خطا` : ''}`,
+   166→      })
+   167→      bumpData()
+   168→    } catch (err) {
+   169→      toast({ title: 'خطا در ورود CSV', description: err instanceof Error ? err.message : 'ناموفق', variant: 'destructive' })
+   170→    }
+   171→  }
+   172→
+   173→  const effectivePrice = (p: Product) => (p.discountPrice && p.discountPrice > 0 ? p.discountPrice : p.salePrice)
+   174→  const allChecked = items.length > 0 && items.every((p) => selected.has(p.id))
+   175→
+   176→  const toggleAll = () => {
+   177→    if (allChecked) setSelected(new Set())
+   178→    else setSelected(new Set(items.map((p) => p.id)))
+   179→  }
+   180→
+   181→  const productCard = useMemo(() => (p: Product) => {
+   182→    const badge = statusBadge(p)
+   183→    return (
+   184→      <Card key={p.id} className="border-blue-100 dark:border-slate-800 overflow-hidden group">
+   185→        <div className="relative aspect-square bg-blue-50/60 dark:bg-slate-900">
+   186→          {p.images[0] ? (
+   187→            <img src={p.images[0]} alt={p.name} className="w-full h-full object-cover" loading="lazy" />
+   188→          ) : (
+   189→            <div className="w-full h-full flex items-center justify-center">
+   190→              <Package className="w-10 h-10 text-blue-300" />
+   191→            </div>
+   192→          )}
+   193→          <Badge className={`absolute top-2 right-2 border-0 ${badge.cls}`}>{badge.label}</Badge>
+   194→        </div>
+   195→        <CardContent className="p-3 space-y-2">
+   196→          <div className="flex items-start justify-between gap-2">
+   197→            <div className="min-w-0">
+   198→              <p className="font-semibold text-sm text-slate-800 dark:text-slate-100 truncate">{p.name}</p>
+   199→              <p className="text-xs text-slate-400 mt-0.5">{p.category.name} · {p.sku}</p>
+   200→            </div>
+   201→            <span
+   202→              className={`text-xs px-2 py-0.5 rounded-md font-medium shrink-0 ${
+   203→                p.stock === 0
+   204→                  ? 'bg-red-50 text-red-600 dark:bg-red-950 dark:text-red-300'
+   205→                  : 'bg-blue-50 text-blue-700 dark:bg-slate-900 dark:text-blue-300'
+   206→              }`}
+   207→            >
+   208→              موجودی: {faNumber(p.stock)}
+   209→            </span>
+   210→          </div>
+   211→          <p className={`font-bold text-sm ${p.discountPrice ? 'text-red-600 dark:text-red-400' : 'text-blue-700 dark:text-blue-300'}`}>
+   212→            {faMoney(effectivePrice(p))}
+   213→            {p.discountPrice && <span className="text-xs text-slate-400 line-through font-normal mr-1.5">{faMoney(p.salePrice)}</span>}
+   214→          </p>
+   215→          <div className="flex items-center gap-1.5 pt-1">
+   216→            {canSell && (
+   217→              <Button size="sm" className="flex-1 h-8 bg-blue-600 hover:bg-blue-700" disabled={p.stock === 0} onClick={() => setSelling(p)}>
+   218→                <ShoppingCart className="w-3.5 h-3.5" /> ثبت فروش
+   219→              </Button>
+   220→            )}
+   221→            {canEdit && (
+   222→              <>
+   223→                <Button size="icon" variant="outline" className="h-8 w-8" title="ویرایش سریع قیمت" onClick={() => {
+   224→                  const input = window.prompt(`قیمت جدید «${p.name}» (تومان):`, String(p.salePrice))
+   225→                  if (input) quickUpdate(p, { salePrice: input })
+   226→                }}>
+   227→                  <Wrench className="w-3.5 h-3.5" />
+   228→                </Button>
+   229→                <Button size="icon" variant="outline" className="h-8 w-8" title="ویرایش کامل" onClick={() => { setEditing(p); setFormOpen(true) }}>
+   230→                  <Pencil className="w-3.5 h-3.5" />
+   231→                </Button>
+   232→              </>
+   233→            )}
+   234→            <DropdownMenu>
+   235→              <DropdownMenuTrigger asChild>
+   236→                <Button size="icon" variant="outline" className="h-8 w-8" aria-label="عملیات بیشتر">
+   237→                  <List className="w-3.5 h-3.5" />
+   238→                </Button>
+   239→              </DropdownMenuTrigger>
+   240→              <DropdownMenuContent align="end">
+   241→                {canEdit && (
+   242→                  <DropdownMenuItem onClick={() => setAdjusting(p)}>
+   243→                    <Package className="w-4 h-4 ml-2" /> تغییر موجودی
+   244→                  </DropdownMenuItem>
+   245→                )}
+   246→                {canManage && (
+   247→                  <DropdownMenuItem onClick={() => duplicate(p)}>
+   248→                    <Copy className="w-4 h-4 ml-2" /> کپی محصول
+   249→                  </DropdownMenuItem>
+   250→                )}
+   251→                {canDelete && (
+   252→                  <DropdownMenuItem onClick={() => trash(p)} className="text-red-600">
+   253→                    <Trash2 className="w-4 h-4 ml-2" /> حذف
+   254→                  </DropdownMenuItem>
+   255→                )}
+   256→              </DropdownMenuContent>
+   257→            </DropdownMenu>
+   258→          </div>
+   259→        </CardContent>
+   260→      </Card>
+   261→    )
+   262→  }, [canSell, canEdit, canManage, canDelete])
+   263→
+   264→  return (
+   265→    <div className="space-y-4">
+   266→      <div className="flex flex-wrap items-center justify-between gap-3">
+   267→        <div>
+   268→          <h1 className="text-xl font-bold text-slate-800 dark:text-slate-100">
+   269→            {trashMode ? 'سطل زباله محصولات' : 'همهٔ محصولات'}
+   270→          </h1>
+   271→          <p className="text-sm text-slate-500 dark:text-slate-400">{faNumber(total)} محصول</p>
+   272→        </div>
+   273→        <div className="flex flex-wrap items-center gap-2">
+   274→          <Button size="sm" variant={layout === 'grid' ? 'default' : 'outline'} className={layout === 'grid' ? 'bg-blue-600' : ''} onClick={() => setLayout('grid')} aria-label="نمایش کارتی">
+   275→            <LayoutGrid className="w-4 h-4" />
+   276→          </Button>
+   277→          <Button size="sm" variant={layout === 'table' ? 'default' : 'outline'} className={layout === 'table' ? 'bg-blue-600' : ''} onClick={() => setLayout('table')} aria-label="نمایش جدولی">
+   278→            <List className="w-4 h-4" />
+   279→          </Button>
+   280→          {canManage && (
+   281→            <>
+   282→              <Button
+   283→                size="sm" variant="outline"
+   284→                onClick={() => downloadFile('/api/export/excel?type=products', 'products.xlsx')
+   285→                  .catch((e) => toast({ title: 'خطا', description: e instanceof Error ? e.message : 'دانلود ناموفق', variant: 'destructive' }))}
+   286→              ><Download className="w-4 h-4" /> خروجی اکسل</Button>
+   287→              <Button
+   288→                size="sm" variant="outline"
+   289→                onClick={() => downloadFile('/api/export?type=products', 'products.csv')
+   290→                  .catch((e) => toast({ title: 'خطا', description: e instanceof Error ? e.message : 'دانلود ناموفق', variant: 'destructive' }))}
+   291→              ><Download className="w-4 h-4" /> خروجی CSV</Button>
+   292→              <label>
+   293→                <input
+   294→                  type="file"
+   295→                  accept=".csv"
+   296→                  className="hidden"
+   297→                  onChange={(e) => {
+   298→                    const f = e.target.files?.[0]
+   299→                    if (f) importCsv(f)
+   300→                    e.target.value = ''
+   301→                  }}
+   302→                />
+   303→                <Button size="sm" variant="outline" asChild>
+   304→                  <span><Upload className="w-4 h-4" /> ورود CSV</span>
+   305→                </Button>
+   306→              </label>
+   307→              <Button size="sm" className="bg-blue-600 hover:bg-blue-700" onClick={() => { setEditing(null); setFormOpen(true) }}>
+   308→                <Plus className="w-4 h-4" /> محصول جدید
+   309→              </Button>
+   310→            </>
+   311→          )}
+   312→          {canDelete && (
+   313→            <Button size="sm" variant={trashMode ? 'default' : 'ghost'} className={trashMode ? 'bg-blue-600' : 'text-slate-500'} onClick={() => { setTrashMode(!trashMode); setPage(1) }}>
+   314→              {trashMode ? <><Package className="w-4 h-4" /> خروج از سطل</> : <><Trash2 className="w-4 h-4" /> سطل زباله</>}
+   315→            </Button>
+   316→          )}
+   317→        </div>
+   318→      </div>
+   319→
+   320→      {/* filters */}
+   321→      <Card className="border-blue-100 dark:border-slate-800">
+   322→        <CardContent className="p-3 flex flex-wrap items-center gap-2">
+   323→          <div className="relative flex-1 min-w-48">
+   324→            <Search className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+   325→            <Input
+   326→              placeholder="جستجو در نام، SKU، برند..."
+   327→              value={search}
+   328→              onChange={(e) => { setSearch(e.target.value); setPage(1) }}
+   329→              className="pr-9"
+   330→            />
+   331→          </div>
+   332→          <Select value={category} onValueChange={(v) => { setCategory(v); setPage(1) }}>
+   333→            <SelectTrigger className="w-40"><SelectValue placeholder="دسته‌بندی" /></SelectTrigger>
+   334→            <SelectContent>
+   335→              <SelectItem value="all">همهٔ دسته‌ها</SelectItem>
+   336→              {categories.map((c) => (
+   337→                <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+   338→              ))}
+   339→            </SelectContent>
+   340→          </Select>
+   341→          <Select value={status} onValueChange={(v) => { setStatus(v); setPage(1) }}>
+   342→            <SelectTrigger className="w-36"><SelectValue placeholder="وضعیت" /></SelectTrigger>
+   343→            <SelectContent>
+   344→              <SelectItem value="all">همهٔ وضعیت‌ها</SelectItem>
+   345→              <SelectItem value="PUBLISHED">منتشرشده</SelectItem>
+   346→              <SelectItem value="DRAFT">پیش‌نویس</SelectItem>
+   347→              <SelectItem value="OUT">ناموجود</SelectItem>
+   348→              <SelectItem value="ARCHIVED">آرشیو</SelectItem>
+   349→            </SelectContent>
+   350→          </Select>
+   351→          <Select value={stock} onValueChange={(v) => { setStock(v); setPage(1) }}>
+   352→            <SelectTrigger className="w-36"><SelectValue placeholder="موجودی" /></SelectTrigger>
+   353→            <SelectContent>
+   354→              <SelectItem value="all">همه</SelectItem>
+   355→              <SelectItem value="in">موجود</SelectItem>
+   356→              <SelectItem value="low">کم‌موجودی</SelectItem>
+   357→              <SelectItem value="out">ناموجود</SelectItem>
+   358→            </SelectContent>
+   359→          </Select>
+   360→          <Select value={sort} onValueChange={setSort}>
+   361→            <SelectTrigger className="w-40"><SelectValue placeholder="ترتیب" /></SelectTrigger>
+   362→            <SelectContent>
+   363→              <SelectItem value="newest">جدیدترین</SelectItem>
+   364→              <SelectItem value="name">نام (الفبا)</SelectItem>
+   365→              <SelectItem value="priceAsc">ارزان‌ترین</SelectItem>
+   366→              <SelectItem value="priceDesc">گران‌ترین</SelectItem>
+   367→              <SelectItem value="stockAsc">کمترین موجودی</SelectItem>
+   368→              <SelectItem value="stockDesc">بیشترین موجودی</SelectItem>
+   369→            </SelectContent>
+   370→          </Select>
+   371→        </CardContent>
+   372→      </Card>
+   373→
+   374→      {/* bulk bar */}
+   375→      {selected.size > 0 && canEdit && (
+   376→        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-blue-200 dark:border-blue-900 bg-blue-50 dark:bg-blue-950/30 px-3 py-2">
+   377→          <span className="text-sm text-blue-700 dark:text-blue-300 font-medium">{faNumber(selected.size)} محصول انتخاب شده</span>
+   378→          {!trashMode && (
+   379→            <Select onValueChange={(v) => { if (v !== 'x') bulk('status', { status: v }) }}>
+   380→              <SelectTrigger className="w-36 h-8 bg-white dark:bg-slate-950"><SelectValue placeholder="تغییر وضعیت" /></SelectTrigger>
+   381→              <SelectContent>
+   382→                <SelectItem value="PUBLISHED">منتشرشده</SelectItem>
+   383→                <SelectItem value="DRAFT">پیش‌نویس</SelectItem>
+   384→                <SelectItem value="ARCHIVED">آرشیو</SelectItem>
+   385→              </SelectContent>
+   386→            </Select>
+   387→          )}
+   388→          <Select onValueChange={(v) => { if (v !== 'x') bulk('category', { categoryId: v }) }}>
+   389→            <SelectTrigger className="w-40 h-8 bg-white dark:bg-slate-950"><SelectValue placeholder="انتقال به دسته" /></SelectTrigger>
+   390→            <SelectContent>
+   391→              {categories.map((c) => (
+   392→                <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+   393→              ))}
+   394→            </SelectContent>
+   395→          </Select>
+   396→          <Button size="sm" variant="outline" onClick={bulkPricePercent}>تغییر درصدی قیمت</Button>
+   397→          {!trashMode && canDelete && <Button size="sm" variant="destructive" onClick={() => bulk('trash')}>حذف گروهی</Button>}
+   398→          {trashMode && <Button size="sm" variant="outline" onClick={() => bulk('restore')}>بازگردانی گروهی</Button>}
+   399→        </div>
+   400→      )}
+   401→
+   402→      {/* items */}
+   403→      {loading && items.length === 0 ? (
+   404→        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+   405→          {Array.from({ length: 8 }).map((_, i) => (
+   406→            <Card key={i} className="border-blue-100 dark:border-slate-800"><div className="aspect-square bg-slate-100 dark:bg-slate-900 animate-pulse" /><CardContent className="p-3 space-y-2"><div className="h-4 bg-slate-100 dark:bg-slate-900 rounded animate-pulse" /><div className="h-4 w-1/2 bg-slate-100 dark:bg-slate-900 rounded animate-pulse" /></CardContent></Card>
+   407→          ))}
+   408→        </div>
+   409→      ) : items.length === 0 ? (
+   410→        <div className="text-center py-16">
+   411→          {trashMode ? <Trash2 className="w-10 h-10 text-blue-300 mx-auto mb-3" /> : <PackageX className="w-10 h-10 text-blue-300 mx-auto mb-3" />}
+   412→          <p className="text-slate-500 dark:text-slate-400">{trashMode ? 'سطل زباله خالی است' : 'محصولی با این فیلترها پیدا نشد'}</p>
+   413→          {canManage && !trashMode && (
+   414→            <Button className="mt-4 bg-blue-600 hover:bg-blue-700" onClick={() => { setEditing(null); setFormOpen(true) }}>
+   415→              <Plus className="w-4 h-4" /> افزودن اولین محصول
+   416→            </Button>
+   417→          )}
+   418→        </div>
+   419→      ) : layout === 'grid' ? (
+   420→        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+   421→          {items.map((p) => (
+   422→            <div key={p.id} className="relative">
+   423→              {canEdit && (
+   424→                <Checkbox
+   425→                  checked={selected.has(p.id)}
+   426→                  onCheckedChange={() => setSelected((s) => { const n = new Set(s); if (n.has(p.id)) n.delete(p.id); else n.add(p.id); return n })}
+   427→                  className="absolute top-2 left-2 z-10 bg-white dark:bg-slate-950"
+   428→                  aria-label={`انتخاب ${p.name}`}
+   429→                />
+   430→              )}
+   431→              {productCard(p)}
+   432→            </div>
+   433→          ))}
+   434→        </div>
+   435→      ) : (
+   436→        <Card className="border-blue-100 dark:border-slate-800 overflow-hidden">
+   437→          <div className="overflow-x-auto nice-scroll">
+   438→            <Table>
+   439→              <TableHeader>
+   440→                <TableRow>
+   441→                  {canEdit && (
+   442→                    <TableHead className="w-10">
+   443→                      <Checkbox checked={allChecked} onCheckedChange={toggleAll} aria-label="انتخاب همه" />
+   444→                    </TableHead>
+   445→                  )}
+   446→                  <TableHead>محصول</TableHead>
+   447→                  <TableHead className="hidden md:table-cell">دسته</TableHead>
+   448→                  <TableHead>قیمت</TableHead>
+   449→                  <TableHead>موجودی</TableHead>
+   450→                  <TableHead>وضعیت</TableHead>
+   451→                  <TableHead className="text-left">عملیات</TableHead>
+   452→                </TableRow>
+   453→              </TableHeader>
+   454→              <TableBody>
+   455→                {items.map((p) => {
+   456→                  const badge = statusBadge(p)
+   457→                  return (
+   458→                    <TableRow key={p.id}>
+   459→                      {canEdit && (
+   460→                        <TableCell>
+   461→                          <Checkbox
+   462→                            checked={selected.has(p.id)}
+   463→                            onCheckedChange={() => setSelected((s) => { const n = new Set(s); if (n.has(p.id)) n.delete(p.id); else n.add(p.id); return n })}
+   464→                            aria-label={`انتخاب ${p.name}`}
+   465→                          />
+   466→                        </TableCell>
+   467→                      )}
+   468→                      <TableCell>
+   469→                        <div className="flex items-center gap-2.5">
+   470→                          {p.images[0] ? (
+   471→                            <img src={p.images[0]} alt={p.name} className="w-10 h-10 rounded-lg object-cover bg-blue-50" loading="lazy" />
+   472→                          ) : (
+   473→                            <span className="flex items-center justify-center w-10 h-10 rounded-lg bg-blue-50 dark:bg-slate-900">
+   474→                              <Package className="w-4 h-4 text-blue-400" />
+   475→                            </span>
+   476→                          )}
+   477→                          <div className="min-w-0">
+   478→                            <p className="font-medium text-sm truncate max-w-52">{p.name}</p>
+   479→                            <p className="text-xs text-slate-400">{p.sku}</p>
+   480→                          </div>
+   481→                        </div>
+   482→                      </TableCell>
+   483→                      <TableCell className="hidden md:table-cell text-sm text-slate-500">{p.category.name}</TableCell>
+   484→                      <TableCell className="text-sm font-semibold text-blue-700 dark:text-blue-300">{faMoney(effectivePrice(p))}</TableCell>
+   485→                      <TableCell>
+   486→                        {canEdit ? (
+   487→                          <Input
+   488→                            type="number"
+   489→                            defaultValue={p.stock}
+   490→                            className="w-20 h-8"
+   491→                            onBlur={(e) => {
+   492→                              const v = parseInt(e.target.value, 10)
+   493→                              if (Number.isFinite(v) && v !== p.stock) quickUpdate(p, { stock: v })
+   494→                            }}
+   495→                            aria-label={`موجودی ${p.name}`}
+   496→                          />
+   497→                        ) : (
+   498→                          <span className="text-sm">{faNumber(p.stock)}</span>
+   499→                        )}
+   500→                      </TableCell>
+   501→                      <TableCell><Badge className={`border-0 ${badge.cls}`}>{badge.label}</Badge></TableCell>
+   502→                      <TableCell>
+   503→                        <div className="flex items-center justify-end gap-1">
+   504→                          {canSell && p.stock > 0 && (
+   505→                            <Button size="icon" variant="outline" className="h-7 w-7" onClick={() => setSelling(p)} title="ثبت فروش">
+   506→                              <ShoppingCart className="w-3.5 h-3.5" />
+   507→                            </Button>
+   508→                          )}
+   509→                          {canEdit && (
+   510→                            <Button size="icon" variant="outline" className="h-7 w-7" onClick={() => { setEditing(p); setFormOpen(true) }} title="ویرایش">
+   511→                              <Pencil className="w-3.5 h-3.5" />
+   512→                            </Button>
+   513→                          )}
+   514→                          {trashMode ? (
+   515→                            <Button size="icon" variant="outline" className="h-7 w-7" onClick={() => restore(p)} title="بازگردانی">
+   516→                              <RotateCcw className="w-3.5 h-3.5" />
+   517→                            </Button>
+   518→                          ) : (
+   519→                            canDelete && (
+   520→                              <Button size="icon" variant="outline" className="h-7 w-7 text-red-500" onClick={() => trash(p)} title="حذف">
+   521→                                <Trash2 className="w-3.5 h-3.5" />
+   522→                              </Button>
+   523→                            )
+   524→                          )}
+   525→                        </div>
+   526→                      </TableCell>
+   527→                    </TableRow>
+   528→                  )
+   529→                })}
+   530→              </TableBody>
+   531→            </Table>
+   532→          </div>
+   533→        </Card>
+   534→      )}
+   535→
+   536→      {/* pagination */}
+   537→      {totalPages > 1 && (
+   538→        <div className="flex items-center justify-center gap-2">
+   539→          <Button size="icon" variant="outline" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)} aria-label="صفحه بعد">
+   540→            <ChevronRight className="w-4 h-4" />
+   541→          </Button>
+   542→          <span className="text-sm text-slate-500">صفحه {faNumber(page)} از {faNumber(totalPages)}</span>
+   543→          <Button size="icon" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)} aria-label="صفحه قبل">
+   544→            <ChevronLeft className="w-4 h-4" />
+   545→          </Button>
+   546→        </div>
+   547→      )}
+   548→
+   549→      {/* dialogs */}
+   550→      <ProductFormDialog
+   551→        open={formOpen}
+   552→        product={editing}
+   553→        categories={categories}
+   554→        onClose={(changed) => { setFormOpen(false); setEditing(null); if (changed) bumpData() }}
+   555→      />
+   556→      {selling && (
+   557→        <SellDialog
+   558→          product={selling}
+   559→          onClose={(sold) => { setSelling(null); if (sold) bumpData() }}
+   560→        />
+   561→      )}
+   562→      {adjusting && (
+   563→        <StockAdjustDialog
+   564→          product={adjusting}
+   565→          onClose={(changed) => { setAdjusting(null); if (changed) bumpData() }}
+   566→        />
+   567→      )}
+   568→    </div>
+   569→  )
+   570→}
+   571→

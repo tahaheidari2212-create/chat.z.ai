@@ -1,0 +1,202 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------- Users & Auth ----------------
+
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  name         String
+  role         String   @default("STAFF") // SUPER_ADMIN | ADMIN | STAFF | VIEWER
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sales     Sale[]
+  notes     Note[]
+}
+
+model LoginLog {
+  id        String   @id @default(cuid())
+  username  String
+  success   Boolean
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([username])
+  @@index([createdAt])
+}
+
+// ---------------- Catalog ----------------
+
+model Category {
+  id       String  @id @default(cuid())
+  name     String
+  slug     String  @unique
+  icon     String? // lucide icon name
+  parentId String?
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+  order    Int     @default(0)
+  active   Boolean @default(true)
+
+  products Product[]
+
+  @@index([parentId])
+}
+
+model Product {
+  id                String    @id @default(cuid())
+  name              String
+  slug              String    @unique
+  sku               String    @unique
+  categoryId        String
+  category          Category  @relation(fields: [categoryId], references: [id])
+  brand             String?
+  model             String?
+  salePrice         Int       @default(0) // Toman
+  discountPrice     Int?
+  costPrice         Int?
+  stock             Int       @default(0)
+  lowStockThreshold Int       @default(3)
+  status            String    @default("PUBLISHED") // DRAFT | PUBLISHED | OUT | ARCHIVED
+  attributes        String    @default("[]") // JSON: [{key, value}]
+  images            String    @default("[]") // JSON: [url]
+  shortDesc         String?
+  longDesc          String?
+  metaTitle         String?
+  metaDesc          String?
+  deletedAt         DateTime?
+  createdBy         String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  sales        Sale[]
+  notes        Note[]
+  priceHistory PriceHistory[]
+  stockLogs    StockLog[]
+
+  @@index([categoryId])
+  @@index([status])
+  @@index([deletedAt])
+}
+
+// ---------------- Sales ----------------
+
+model Sale {
+  id           String    @id @default(cuid())
+  productId    String
+  product      Product   @relation(fields: [productId], references: [id])
+  qty          Int       @default(1)
+  unitPrice    Int // snapshot of price at sale time
+  total        Int
+  customerName String?
+  note         String?
+  soldById     String?
+  soldBy       User?     @relation(fields: [soldById], references: [id])
+  soldAt       DateTime  @default(now())
+  cancelledAt  DateTime?
+  cancelReason String?
+
+  @@index([soldAt])
+  @@index([productId])
+}
+
+// ---------------- Notes ----------------
+
+model Note {
+  id        String   @id @default(cuid())
+  title     String
+  body      String   @default("")
+  color     String   @default("blue") // blue | green | amber | red | violet | gray
+  pinned    Boolean  @default(false)
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id])
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([pinned])
+}
+
+// ---------------- Price reminder & history ----------------
+
+model PriceCheck {
+  id        String   @id @default(cuid())
+  date      String   @unique // YYYY-MM-DD (Tehran)
+  status    String   // CONFIRMED (no change) | EDITED (prices updated)
+  userId    String?
+  createdAt DateTime @default(now())
+}
+
+model PriceHistory {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  oldPrice  Int
+  newPrice  Int
+  userId    String?
+  createdAt DateTime @default(now())
+
+  @@index([productId])
+}
+
+model StockLog {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  change    Int // +5, -1 ...
+  reason    String   // SALE | SALE_CANCEL | MANUAL | IMPORT ...
+  userId    String?
+  createdAt DateTime @default(now())
+
+  @@index([productId])
+}
+
+// ---------------- Logs & settings ----------------
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String   // product.create | product.update | product.delete | sale.cancel | user.update ...
+  entity    String
+  entityId  String?
+  details   String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model Setting {
+  id              String   @id @default("main")
+  storeName       String   @default("فروشگاه موبایل")
+  reminderEnabled Boolean  @default(true)
+  reminderHour    Int      @default(10)
+  reminderMinute  Int      @default(0)
+  apiKey          String
+  webhookUrl      String?
+  geminiKey       String?
+  aiProvider      String   @default("zai") // zai (internal, no key) | gemini
+  geminiProxyUrl  String?  // optional proxy for reaching the Gemini API from blocked regions
+  currency        String   @default("TOMAN") // TOMAN | RIAL
+  updatedAt       DateTime @updatedAt
+}
+
+// ---------------- Uploaded images (serverless-safe storage) ----------------
+
+model Upload {
+  id        String   @id @default(cuid())
+  name      String
+  mime      String
+  data      Bytes
+  createdAt DateTime @default(now())
+}
